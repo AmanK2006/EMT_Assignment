@@ -20,7 +20,15 @@ class TransmissionLine:
         self.prop_const = np.sqrt(z_series * y_shunt)
         self.attenuation_const = self.prop_const.real
         self.phase_const = self.prop_const.imag
-        self.wave_len = 2 * np.pi / self.phase_const
+        self.wave_len = 2 * np.pi / self.phase_const if self.phase_const != 0 else np.inf
+        self.phase_velocity = self.angular_freq / self.phase_const if self.phase_const != 0 else np.inf
+        
+        if self.resistance == 0 and self.conductance == 0:
+            self.classification = "Lossless"
+        elif self.inductance != 0 and self.capacitance != 0 and np.isclose(self.resistance / self.inductance, self.conductance / self.capacitance):
+            self.classification = "Distortionless"
+        else:
+            self.classification = "Lossy"
 
     def plot_alpha_beta_ratio(self, freq_array):
         ang_freq_arr = 2 * np.pi * freq_array
@@ -88,6 +96,41 @@ class TransmissionLine:
         input_imp = self.impedance_transformation(load_imp, line_length)
         return 1.0 / input_imp
 
+    def analyze_circuit(self, line_length, load_impedance, generator_voltage, generator_impedance):
+        refl_coeff_load = (load_impedance - self.char_impedance) / (load_impedance + self.char_impedance)
+        mag_gamma = np.abs(refl_coeff_load)
+        vswr = (1 + mag_gamma) / (1 - mag_gamma) if mag_gamma != 1 else np.inf
+        return_loss = -20 * np.log10(mag_gamma) if mag_gamma != 0 else np.inf
+        
+        input_impedance = self.impedance_transformation(load_impedance, line_length)
+        
+        v_in = generator_voltage * input_impedance / (input_impedance + generator_impedance)
+        
+        v0_plus = v_in / (np.exp(self.prop_const * line_length) + refl_coeff_load * np.exp(-self.prop_const * line_length))
+        v0_minus = v0_plus * refl_coeff_load
+        
+        theta_gamma = np.angle(refl_coeff_load)
+        n = np.arange(-10, 10)
+        
+        d_max = (theta_gamma + 2 * n * np.pi) / (2 * self.phase_const)
+        d_max = d_max[(d_max >= 0) & (d_max <= line_length)]
+        
+        d_min = (theta_gamma + (2 * n - 1) * np.pi) / (2 * self.phase_const)
+        d_min = d_min[(d_min >= 0) & (d_min <= line_length)]
+        
+        return {
+            "v_p": self.phase_velocity,
+            "classification": self.classification,
+            "Gamma_L": refl_coeff_load,
+            "VSWR": vswr,
+            "ReturnLoss": return_loss,
+            "Z_in": input_impedance,
+            "V0_plus": np.abs(v0_plus),
+            "V0_minus": np.abs(v0_minus),
+            "d_max": d_max.tolist(),
+            "d_min": d_min.tolist()
+        }
+
 if __name__ == "__main__":
     res = 0.5
     ind = 0.25e-6
@@ -98,10 +141,16 @@ if __name__ == "__main__":
     tl_obj = TransmissionLine(res, ind, cond, cap, freq_val)
     print(f"Z0 = {tl_obj.char_impedance:.2f}")
     print(f"gamma = {tl_obj.prop_const:.4f}")
+    print(f"Phase Velocity = {tl_obj.phase_velocity:.2e} m/s")
+    print(f"Classification = {tl_obj.classification}")
     
     tl_obj.plot_alpha_beta_ratio(np.linspace(1e9, 5e9, 41))
     tl_obj.plot_waves_3d()
 
-    load_z = 75 + 100j
-    input_z = tl_obj.impedance_transformation(load_z, 0.1)
-    print(f"Input impedance Z_in at l=0.1m: {input_z:.2f}")
+    load_z = 100 + 50j
+    input_z = tl_obj.impedance_transformation(load_z, 1.0)
+    print(f"Input impedance Z_in at l=1.0m: {input_z:.2f}")
+    
+    circuit_params = tl_obj.analyze_circuit(1.0, load_z, 10.0, 50.0)
+    print(f"VSWR = {circuit_params['VSWR']:.4f}")
+    print(f"Return Loss = {circuit_params['ReturnLoss']:.2f} dB")
